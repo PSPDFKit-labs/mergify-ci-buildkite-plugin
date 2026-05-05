@@ -7,16 +7,32 @@ source "${DIR}/../lib/shared.sh"
 
 log_info "Installing mergify-cli..."
 
-# Install uv if not available
+# Keep the uv tool installation job-local by default. `uv tool install --force
+# --upgrade` mutates both the tool directory and the generated executable. On
+# shared Buildkite agents, multiple plugin instances can run concurrently under
+# the same user; using the default uv locations in $HOME lets one job remove or
+# rewrite the `mergify` executable while another job is about to run it.
+UV_TOOL_ROOT="${BUILDKITE_BUILD_CHECKOUT_PATH:-$PWD}/.buildkite/mergify-ci"
+UV_TOOL_JOB_ID="${BUILDKITE_JOB_ID:-manual-$$}"
+export UV_INSTALL_DIR="${UV_INSTALL_DIR:-${UV_TOOL_ROOT}/uv/${UV_TOOL_JOB_ID}}"
+export UV_TOOL_DIR="${UV_TOOL_DIR:-${UV_TOOL_ROOT}/tools/${UV_TOOL_JOB_ID}}"
+export UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-${UV_TOOL_ROOT}/bin/${UV_TOOL_JOB_ID}}"
+mkdir -p "$UV_INSTALL_DIR" "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR"
+export PATH="$UV_TOOL_BIN_DIR:$UV_INSTALL_DIR:$HOME/.local/bin:$PATH"
+
+# Install uv if not available. UV_INSTALL_DIR is honored by Astral's installer
+# and keeps the bootstrap install job-local instead of mutating shared
+# $HOME/.local/bin on concurrent same-user Buildkite jobs.
 if ! command -v uv &>/dev/null; then
   echo "uv not found, installing..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
+  export PATH="$UV_INSTALL_DIR:$PATH"
 fi
 
 # Install (or upgrade) mergify-cli. --force --upgrade ensures we always
 # fetch the latest release, even when the tool is already cached on the
-# agent from a previous build.
+# agent from a previous build. UV_TOOL_DIR and UV_TOOL_BIN_DIR are job-local by
+# default, so concurrent jobs do not mutate the executable used by each other.
 PYTHON_VERSION="$(plugin_config PYTHON_VERSION "3.13")"
 if [[ "$PYTHON_VERSION" == "system" ]]; then
   uv tool install --force --upgrade mergify-cli
