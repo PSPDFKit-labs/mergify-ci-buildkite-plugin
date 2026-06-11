@@ -7,30 +7,61 @@ source "${DIR}/../lib/shared.sh"
 
 log_info "Installing mergify-cli..."
 
-# uv installs itself and its tools into ~/.local/bin; put it on PATH before
-# checking for uv so a uv (and mergify-cli) cached from a previous build is
-# found instead of being re-downloaded on every job.
-export PATH="$HOME/.local/bin:$PATH"
+if [[ -z "${BUILDKITE_AGENT_ID:-}" ]]; then
+  log_error "BUILDKITE_AGENT_ID is required to isolate Mergify tool installs per Buildkite agent."
+  exit 1
+fi
 
-# Install uv if not available
-if ! command -v uv &>/dev/null; then
-  echo "uv not found, installing..."
+# Keep uv and mergify-cli agent-local. Multiple Buildkite agent processes can
+# share the same OS user and home directory, so the default uv locations in
+# $HOME are not safe. Each Buildkite agent runs one job at a time, so an
+# agent-scoped directory avoids cross-agent races while still reusing installs
+# across jobs handled by the same agent.
+agent_id="$(printf '%s' "$BUILDKITE_AGENT_ID" | tr -c '[:alnum:]._-' '_')"
+tool_root="${MERGIFY_CI_TOOL_ROOT:-${HOME}/.mergify/${agent_id}}"
+export UV_INSTALL_DIR="${UV_INSTALL_DIR:-${tool_root}/uv}"
+export UV_TOOL_DIR="${UV_TOOL_DIR:-${tool_root}/tools}"
+export UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-${tool_root}/bin}"
+mkdir -p "$UV_INSTALL_DIR" "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR"
+export PATH="$UV_TOOL_BIN_DIR:$UV_INSTALL_DIR:$HOME/.local/bin:$PATH"
+
+# Install uv if not available in the agent-local install directory.
+# UV_INSTALL_DIR is honored by Astral's installer.
+if [[ ! -x "${UV_INSTALL_DIR}/uv" ]]; then
+  echo "uv not found in ${UV_INSTALL_DIR}, installing..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# Install (or upgrade) mergify-cli. --force --upgrade ensures we always
-# fetch the latest release, even when the tool is already cached on the
-# agent from a previous build. PyPI is occasionally unreachable from CI
-# agents (e.g. CDN throttling of data-center IPs), so when the install
-# fails but a cached copy exists, use the cached copy instead of failing
-# the build.
+# Default mergify-cli release installed when the plugin config doesn't request a
+# specific one. Renovate keeps this pinned version current via PRs.
+# renovate: datasource=pypi depName=mergify-cli versioning=pep440
+DEFAULT_MERGIFY_CLI_VERSION="2026.5.29.2"
+
+# Resolve the requested release. An explicit "latest" installs the newest release
+# unpinned; anything else (including the default above) pins it with ==.
+CLI_VERSION="$(plugin_config MERGIFY_CLI_VERSION "$DEFAULT_MERGIFY_CLI_VERSION")"
+if [[ "$CLI_VERSION" == "latest" ]]; then
+  CLI_PACKAGE="mergify-cli"
+else
+  CLI_PACKAGE="mergify-cli==$CLI_VERSION"
+fi
+
+# Install (or upgrade) mergify-cli. --force --upgrade ensures we always pick up
+# the requested release, even when a different version is already cached on the
+# agent from a previous build. With a pinned version the == constraint keeps the
+# resolution at that exact release. UV_TOOL_DIR and UV_TOOL_BIN_DIR are
+# agent-local by default, so concurrent jobs on other Buildkite agents do not
+# mutate the executable used by this agent.
 PYTHON_VERSION="$(plugin_config PYTHON_VERSION "3.13")"
 INSTALL_ARGS=(--force --upgrade)
 if [[ "$PYTHON_VERSION" != "system" ]]; then
   INSTALL_ARGS+=(--python "$PYTHON_VERSION")
 fi
 
-if ! uv tool install "${INSTALL_ARGS[@]}" mergify-cli; then
+# PyPI is occasionally unreachable from CI agents (e.g. CDN throttling of
+# data-center IPs), so when the install fails but a cached copy exists, use
+# the cached copy instead of failing the build.
+if ! uv tool install "${INSTALL_ARGS[@]}" "$CLI_PACKAGE"; then
   if command -v mergify &>/dev/null; then
     log_warning "mergify-cli install/upgrade failed (PyPI unreachable?). Using cached version."
   else
