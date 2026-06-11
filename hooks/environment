@@ -7,15 +7,16 @@ source "${DIR}/../lib/shared.sh"
 
 log_info "Installing mergify-cli..."
 
+# uv installs itself and its tools into ~/.local/bin; put it on PATH before
+# checking for uv so a uv (and mergify-cli) cached from a previous build is
+# found instead of being re-downloaded on every job.
+export PATH="$HOME/.local/bin:$PATH"
+
 # Install uv if not available
 if ! command -v uv &>/dev/null; then
   echo "uv not found, installing..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-
-# uv installs tools into ~/.local/bin; put it on PATH so both uv and any
-# mergify-cli cached from a previous build are found.
-export PATH="$HOME/.local/bin:$PATH"
 
 # Install (or upgrade) mergify-cli. --force --upgrade ensures we always
 # fetch the latest release, even when the tool is already cached on the
