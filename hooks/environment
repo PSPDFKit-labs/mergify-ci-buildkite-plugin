@@ -11,17 +11,32 @@ log_info "Installing mergify-cli..."
 if ! command -v uv &>/dev/null; then
   echo "uv not found, installing..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
 fi
+
+# uv installs tools into ~/.local/bin; put it on PATH so both uv and any
+# mergify-cli cached from a previous build are found.
+export PATH="$HOME/.local/bin:$PATH"
 
 # Install (or upgrade) mergify-cli. --force --upgrade ensures we always
 # fetch the latest release, even when the tool is already cached on the
-# agent from a previous build.
+# agent from a previous build. PyPI is occasionally unreachable from CI
+# agents (e.g. CDN throttling of data-center IPs), so when the install
+# fails but a cached copy exists, use the cached copy instead of failing
+# the build.
 PYTHON_VERSION="$(plugin_config PYTHON_VERSION "3.13")"
-if [[ "$PYTHON_VERSION" == "system" ]]; then
-  uv tool install --force --upgrade mergify-cli
-else
-  uv tool install --force --upgrade --python "$PYTHON_VERSION" mergify-cli
+INSTALL_ARGS=(--force --upgrade)
+if [[ "$PYTHON_VERSION" != "system" ]]; then
+  INSTALL_ARGS+=(--python "$PYTHON_VERSION")
+fi
+
+if ! uv tool install "${INSTALL_ARGS[@]}" mergify-cli; then
+  if command -v mergify &>/dev/null; then
+    log_warning "mergify-cli install/upgrade failed (PyPI unreachable?). Using cached version."
+  else
+    log_error "mergify-cli installation failed and no cached version is available."
+    log_error "Try setting python_version in the plugin config (e.g., python_version: '3.13')."
+    exit 1
+  fi
 fi
 
 # Verify installation
