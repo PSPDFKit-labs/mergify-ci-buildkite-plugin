@@ -32,14 +32,31 @@ if [[ ! -x "${UV_INSTALL_DIR}/uv" ]]; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# Install (or upgrade) mergify-cli. UV_TOOL_DIR and UV_TOOL_BIN_DIR are
+# Default mergify-cli release installed when the plugin config doesn't request a
+# specific one. Renovate keeps this pinned version current via PRs.
+# renovate: datasource=pypi depName=mergify-cli versioning=pep440
+DEFAULT_MERGIFY_CLI_VERSION="2026.5.29.2"
+
+# Resolve the requested release. An explicit "latest" installs the newest release
+# unpinned; anything else (including the default above) pins it with ==.
+CLI_VERSION="$(plugin_config MERGIFY_CLI_VERSION "$DEFAULT_MERGIFY_CLI_VERSION")"
+if [[ "$CLI_VERSION" == "latest" ]]; then
+  CLI_PACKAGE="mergify-cli"
+else
+  CLI_PACKAGE="mergify-cli==$CLI_VERSION"
+fi
+
+# Install (or upgrade) mergify-cli. --force --upgrade ensures we always pick up
+# the requested release, even when a different version is already cached on the
+# agent from a previous build. With a pinned version the == constraint keeps the
+# resolution at that exact release. UV_TOOL_DIR and UV_TOOL_BIN_DIR are
 # agent-local by default, so concurrent jobs on other Buildkite agents do not
 # mutate the executable used by this agent.
 PYTHON_VERSION="$(plugin_config PYTHON_VERSION "3.13")"
 if [[ "$PYTHON_VERSION" == "system" ]]; then
-  uv tool install --force --upgrade mergify-cli
+  uv tool install --force --upgrade "$CLI_PACKAGE"
 else
-  uv tool install --force --upgrade --python "$PYTHON_VERSION" mergify-cli
+  uv tool install --force --upgrade --python "$PYTHON_VERSION" "$CLI_PACKAGE"
 fi
 
 # Verify installation
